@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import tensorflow as tf
 from keras.datasets import cifar10
@@ -156,24 +157,32 @@ def model(input_height, input_width, input_channels, output_classes, pooling_siz
         # avg pooling to get [1 x 1 x num_classes] must average over entire window oh H x W from input layer
         _, H_last, W_last, _ = A_conv_10.get_shape().as_list()
         pooled = tf.nn.avg_pool(A_conv_10, ksize=(1, H_last, W_last, 1), strides=(1, 1, 1, 1), padding='VALID')
-        #logits = tf.squeeze(pooled, axis=[2])
+        logits = tf.squeeze(pooled, axis=[2])
 
         # loss + optimizer
-        one_hot_labels = tf.one_hot(labels, output_classes)
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=one_hot_labels, logits=pooled))
+        one_hot_labels = tf.one_hot(labels, output_classes, name='one_hot_encoding')
+        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=one_hot_labels, logits=logits), name='loss')
         tf.summary.scalar('loss', loss)
         optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss)
 
         # accuracy
-        logits_class_num = tf.cast(tf.argmax(tf.nn.softmax(pooled), axis=1), tf.int32)
-        accuracy = tf.reduce_mean(tf.cast(tf.equal(logits_class_num, labels), dtype=tf.float32))
+        predictions = tf.argmax(tf.nn.softmax(logits), axis=1, output_type=tf.int32)
+        accuracy = tf.reduce_mean(tf.cast(tf.equal(predictions, labels), dtype=tf.float32))
         tf.summary.scalar('accuracy', accuracy)
 
         summaries = tf.summary.merge_all()
 
     return graph, input_image, labels, in_training, learning_rate, loss, accuracy, summaries, optimizer
 
-def run(iterations, minibatch_size, run_number):
+def next_experiment_dir(top_dir):
+    """We need directory with consecutive subdirectories to store results of consecutive trainings. """
+    dirs = [int(dirname) for dirname in os.listdir(top_dir) if os.path.isdir(os.path.join(top_dir, dirname))]
+    if len(dirs) > 0:
+        return os.path.join(top_dir, str(max(dirs) + 1))
+    else:
+        return os.path.join(top_dir, '1')
+
+def run(iterations, minibatch_size):
     # ImageNet
     # input_height = input_width = 227
     # input_channels = 3
@@ -183,14 +192,7 @@ def run(iterations, minibatch_size, run_number):
     input_channels = 3
     output_classes = 10
 
-    # We expect input data in NHWC format, but keras returns it in NCHW, so we need to move dimensions around:
-    # x_train, x_test: uint8 array of RGB image data with shape (num_samples, 3, 32, 32)
-    # y_train, y_test: uint8 array of category labels (integers in range 0-9) with shape (num_samples,).
-    # TODO: do it in tensorflow
     (x_train, y_train), (x_test, y_test) = cifar10.load_data()
-    # x_train = np.transpose(x_train_nchw, [0, 3, 1, 2])
-    # x_test = np.transpose(x_test_nchw, [0, 3, 1, 2])
-
     train_samples = x_train.shape[0]
 
     graph, input_batch, labels, in_training, learning_rate, loss, accuracy, summaries, optimizer = \
@@ -199,30 +201,42 @@ def run(iterations, minibatch_size, run_number):
     with tf.Session(graph=graph) as sess:
         sess.run(tf.global_variables_initializer())
 
-        train_writer = tf.summary.FileWriter('/tmp/squeezenet/{}'.format(run_number), sess.graph)
+        experiment_dir = next_experiment_dir('/tmp/squeezenet')
+        print("Creating output dir:", experiment_dir)
+        train_writer = tf.summary.FileWriter(experiment_dir, sess.graph)
+
         for i in range(iterations):
             # pick random minibatch
             mb_start = np.random.randint(0, train_samples - minibatch_size)
             mb_end = mb_start + minibatch_size
             mb_data = x_train[mb_start:mb_end, :, :, :]
-            mb_labels = y_train[mb_start:mb_end]
+            mb_labels = y_train[mb_start:mb_end, :]
 
             feed_dict = {
                 input_batch: mb_data,
                 labels: mb_labels,
                 in_training: True,
-                learning_rate: 0.0001
+                learning_rate: 0.0004
             }
 
             collectibles = [loss, accuracy, summaries, optimizer]
 
-            loss_val, accurracy_val, s, _ = sess.run(collectibles, feed_dict=feed_dict)
+            loss_val, accuracy_val, s, _ = sess.run(collectibles, feed_dict=feed_dict)
 
             train_writer.add_summary(s, i)
-            if i % 100 == 0:
-                print('Iteration: {}\t, loss: {:.3f}\t, accuracy: {:.3f}'.format(i, loss_val, accurracy_val))
 
-run(2000, 128, 5)
+            if i % 100 == 0:
+                feed_dict = {
+                    input_batch: x_test,
+                    labels: y_test,
+                    in_training: False,
+                    learning_rate: 0.0004
+                }
+                test_accuracy = sess.run(accuracy, feed_dict=feed_dict)
+                print('Iteration: {}\t loss: {:.3f}\t accuracy: {:.3f}\t test accuracy: {:.3f}'.format(
+                    i, loss_val, accuracy_val, test_accuracy))
+
+run(10000, 128)
 
 
 # define session
