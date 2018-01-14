@@ -1,4 +1,5 @@
 import os
+from datetime import datetime as dt
 import numpy as np
 import tensorflow as tf
 from keras.datasets import cifar10
@@ -161,18 +162,20 @@ def model(input_height, input_width, input_channels, output_classes, pooling_siz
 
         # loss + optimizer
         one_hot_labels = tf.one_hot(labels, output_classes, name='one_hot_encoding')
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=one_hot_labels, logits=logits), name='loss')
+        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=one_hot_labels, logits=logits))
         tf.summary.scalar('loss', loss)
         optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss)
 
         # accuracy
         predictions = tf.reshape(tf.argmax(tf.nn.softmax(logits), axis=1, output_type=tf.int32), [-1, 1])
         accuracy = tf.reduce_mean(tf.cast(tf.equal(predictions, labels), dtype=tf.float32))
-        tf.summary.scalar('accuracy', accuracy)
+        tf.summary.scalar('train_accuracy', accuracy)
 
         summaries = tf.summary.merge_all()
+        test_accuracy_summary = tf.summary.scalar('test_accuracy', accuracy)
 
-    return graph, input_image, labels, in_training, learning_rate, loss, accuracy, summaries, optimizer
+    return (graph, input_image, labels, in_training, learning_rate,
+            loss, accuracy, summaries, test_accuracy_summary, optimizer)
 
 
 def next_experiment_dir(top_dir):
@@ -218,7 +221,8 @@ def run(iterations, minibatch_size):
     x_test, _, _ = prepare_input(x_test, mu_train, sigma_train)
     train_samples = x_train.shape[0]
 
-    graph, input_batch, labels, in_training, learning_rate, loss, accuracy, summaries, optimizer = \
+    (graph, input_batch, labels, in_training, learning_rate,
+     loss, accuracy, summaries, test_accuracy_summary, optimizer) = \
         model(input_height, input_width, input_channels, output_classes, (1, 2, 2, 1))
 
     with tf.Session(graph=graph) as sess:
@@ -255,11 +259,14 @@ def run(iterations, minibatch_size):
                     in_training: False,
                     learning_rate: 0.0004
                 }
-                test_accuracy = sess.run(accuracy, feed_dict=feed_dict)
+                test_acc, sum_acc = sess.run([accuracy, test_accuracy_summary], feed_dict=feed_dict)
+                train_writer.add_summary(sum_acc, i)
                 print('Iteration: {}\t loss: {:.3f}\t accuracy: {:.3f}\t test accuracy: {:.3f}'.format(
-                    i, loss_val, accuracy_val, test_accuracy))
+                    i, loss_val, accuracy_val, test_acc))
 
-run(10000, 128)
+start = dt.now()
+run(10001, 128)
+print('running time:', dt.now() - start)
 
 
 # define session
