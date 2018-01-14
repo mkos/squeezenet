@@ -49,20 +49,20 @@ def expand(input, channels_1by1, channels_3by3, layer_num):
         onebyone = tf.nn.conv2d(input, weights1x1, strides=(1, 1, 1, 1), padding='VALID') + biases1x1
         A_1x1 = tf.nn.relu(onebyone)
 
-        tf.summary.histogram('weights [1x1]', weights1x1)
-        tf.summary.histogram('biases [1x1]', biases1x1)
-        tf.summary.histogram('logits [1x1]', onebyone)
-        tf.summary.histogram('activations [1x1]', A_1x1)
+        tf.summary.histogram('weights_1x1', weights1x1)
+        tf.summary.histogram('biases_1x1', biases1x1)
+        tf.summary.histogram('logits_1x1', onebyone)
+        tf.summary.histogram('activations_1x1', A_1x1)
 
         weights3x3 = tf.Variable(tf.contrib.layers.xavier_initializer()([1, 1, input_channels, channels_3by3]))
         biases3x3 = tf.Variable(tf.zeros([1, 1, 1, channels_3by3]), name='biases')
         threebythree = tf.nn.conv2d(input, weights3x3, strides=(1, 1, 1, 1), padding='SAME') + biases3x3
         A_3x3 = tf.nn.relu(threebythree)
 
-        tf.summary.histogram('weights [3x3]', weights3x3)
-        tf.summary.histogram('biases [3x3]', biases3x3)
-        tf.summary.histogram('logits [3x3]', threebythree)
-        tf.summary.histogram('activations [3x3]', A_3x3)
+        tf.summary.histogram('weights_3x3', weights3x3)
+        tf.summary.histogram('biases_3x3', biases3x3)
+        tf.summary.histogram('logits_3x3', threebythree)
+        tf.summary.histogram('activations_3x3', A_3x3)
 
     return tf.concat([A_1x1, A_3x3], axis=3)
 
@@ -145,7 +145,7 @@ def model(input_height, input_width, input_channels, output_classes, pooling_siz
         # layer 13 - final
         with tf.name_scope('final'):
             W_conv10 = tf.Variable(tf.contrib.layers.xavier_initializer()([1, 1, 512, output_classes]))
-            b_conv10 = tf.Variable(tf.zeros([1, 1, 1, 10]))
+            b_conv10 = tf.Variable(tf.zeros([1, 1, 1, output_classes]))
             conv_10 = tf.nn.conv2d(dropout_9, W_conv10, strides=(1, 1, 1,1), padding='VALID') + b_conv10
             A_conv_10 = tf.nn.relu(conv_10)
 
@@ -157,7 +157,7 @@ def model(input_height, input_width, input_channels, output_classes, pooling_siz
         # avg pooling to get [1 x 1 x num_classes] must average over entire window oh H x W from input layer
         _, H_last, W_last, _ = A_conv_10.get_shape().as_list()
         pooled = tf.nn.avg_pool(A_conv_10, ksize=(1, H_last, W_last, 1), strides=(1, 1, 1, 1), padding='VALID')
-        logits = tf.squeeze(pooled, axis=[2])
+        logits = tf.squeeze(pooled, axis=[1, 2])
 
         # loss + optimizer
         one_hot_labels = tf.one_hot(labels, output_classes, name='one_hot_encoding')
@@ -166,13 +166,14 @@ def model(input_height, input_width, input_channels, output_classes, pooling_siz
         optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss)
 
         # accuracy
-        predictions = tf.argmax(tf.nn.softmax(logits), axis=1, output_type=tf.int32)
+        predictions = tf.reshape(tf.argmax(tf.nn.softmax(logits), axis=1, output_type=tf.int32), [-1, 1])
         accuracy = tf.reduce_mean(tf.cast(tf.equal(predictions, labels), dtype=tf.float32))
         tf.summary.scalar('accuracy', accuracy)
 
         summaries = tf.summary.merge_all()
 
     return graph, input_image, labels, in_training, learning_rate, loss, accuracy, summaries, optimizer
+
 
 def next_experiment_dir(top_dir):
     """We need directory with consecutive subdirectories to store results of consecutive trainings. """
@@ -181,6 +182,26 @@ def next_experiment_dir(top_dir):
         return os.path.join(top_dir, str(max(dirs) + 1))
     else:
         return os.path.join(top_dir, '1')
+
+
+def prepare_input(data, mu=None, sigma=None):
+    """
+    Normalizes pixels across dataset. For training set, calculate mu and sigma. For test set, transfer these
+    from training set.
+
+    :param data: dataset
+    :param mu: mean pixel value across dataset. Calculated if not provided.
+    :param sigma: standard deviation of pixel value across dataset. Calculated if not provided.
+    :return: normalized dataset, mean and standard deviation
+    """
+    if mu is None:
+        mu = np.mean(data)
+    if sigma is None:
+        sigma = np.std(data)
+    data = data - mu
+    data = data / sigma
+    return data, mu, sigma
+
 
 def run(iterations, minibatch_size):
     # ImageNet
@@ -193,6 +214,8 @@ def run(iterations, minibatch_size):
     output_classes = 10
 
     (x_train, y_train), (x_test, y_test) = cifar10.load_data()
+    x_train, mu_train, sigma_train = prepare_input(x_train)
+    x_test, _, _ = prepare_input(x_test, mu_train, sigma_train)
     train_samples = x_train.shape[0]
 
     graph, input_batch, labels, in_training, learning_rate, loss, accuracy, summaries, optimizer = \
